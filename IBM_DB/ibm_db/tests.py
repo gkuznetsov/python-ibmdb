@@ -1,10 +1,11 @@
 import os
 import sys
 import unittest
-import StringIO
 import re
 import glob
 import config
+import StringIO
+
 
 class IbmDbTest(unittest.TestCase):
   
@@ -38,7 +39,7 @@ class IbmDbTest(unittest.TestCase):
 
   # This function is called to run all the tests.
   def runTest(self):
-    filelist = self.getFileList();
+    filelist = self.getFileList()
     suite = unittest.TestSuite()
     
     sys.path = [os.path.dirname(os.path.abspath(__file__)) + self.slash + config.test_dir] + sys.path[0:]
@@ -48,7 +49,7 @@ class IbmDbTest(unittest.TestCase):
       testFuncName = filelist[i].replace(config.test_dir + self.slash, '')
       exec("suite.addTest(%s.IbmDbTestCase(testFuncName))" % filelist[i])
       
-    unittest.TextTestRunner(verbosity=2).run(suite) 
+    unittest.TextTestRunner(verbosity=4).run(suite)
 
 obj = IbmDbTest()
 suite = obj.runTest()

@@ -62,6 +62,8 @@ static int is_systemi, is_informix;	  /* 1 == TRUE; 0 == FALSE; */
 #define LIBDB2 "libdb2.so.1"
 #endif
 
+#include <db2ApiDf.h>
+
 /* Defines a linked list structure for error messages */
 typedef struct _error_msg_node {
 	char err_msg[DB2_MAX_ERR_MSG_LEN];
@@ -1601,6 +1603,7 @@ static void _python_ibm_db_clear_conn_err_cache(void)
  * ibm_db.client_info
  * ibm_db.active
  * ibm_db.get_option
+ * ibm_db.read_log
  */
 
 
@@ -10998,6 +11001,166 @@ static int _python_get_variable_type(PyObject *variable_value)
 	else return 0;
 }
 
+
+
+#include "utilrecov.c"
+
+static PyObject *ibm_db_read_log_record(PyObject *self, PyObject *args)
+{
+
+    char logPath[] = "/home/db2inst1/db2logs/db2inst1/SAMPLE/NODE0000/LOGSTREAM0000/C0000000/";
+    // TODO check readibility !!!!
+
+    int rc = 0;
+    struct sqlca sqlca = { 0 };
+    //db2CfgParam cfgParameters[1] = { 0 };
+    //db2Cfg cfgStruct = { 0 };
+    char nodeNum[] = "NODE0000\0";
+    char dbAlias[] = "SAMPLE";
+    db2Uint32 readLogMemSize = 0;
+    char *readLogMemory = NULL;
+    struct db2ArchiveLogStruct archiveLogInput = { 0 };
+    struct db2ReadLogNoConnInitStruct readLogInit = { 0 };
+    struct db2ReadLogNoConnInfoStruct readLogInfo = { 0 };
+    struct db2ReadLogNoConnStruct readLogInput = { 0 };
+    db2LSN startLSN;
+    db2LSN endLSN;
+    char *logBuffer = NULL;
+    db2Uint32 logBufferSize = 0;
+    struct db2ReadLogNoConnTermStruct readLogTerm = { 0 };
+    db2CfgParam cfgParameters[1] = { 0 };
+    db2Cfg cfgStruct = { 0 };
+
+    /* Determine the logpath to read log files from */
+    cfgParameters[0].flags = 0;
+    cfgParameters[0].token = SQLF_DBTN_LOGARCHMETH1;
+    cfgParameters[0].ptrvalue =
+    (char *)malloc((SQL_PATH_SZ + 1) * sizeof(char));
+
+    /* Initialize cfgStruct */
+    cfgStruct.numItems = 1;
+    cfgStruct.paramArray = cfgParameters;
+    cfgStruct.flags = db2CfgDatabase;
+    cfgStruct.dbname = dbAlias;
+
+    db2CfgGet(db2Version1111, (void *)&cfgStruct, &sqlca);;
+
+
+    /* Invoke the db2ArchiveLog API to archive the active logs */
+    archiveLogInput.piDatabaseAlias = "SAMPLE";
+    archiveLogInput.piUserName = "db2inst1";
+    archiveLogInput.piPassword = "kgg1024";
+    archiveLogInput.iAllNodeFlag = DB2ARCHIVELOG_ALL_NODES; /*(int)NULL;*/
+    archiveLogInput.iNumNodes = (int)NULL;
+    archiveLogInput.piNodeList = NULL;
+    archiveLogInput.iOptions = (int)NULL;
+    db2ArchiveLog(db2Version1111, &archiveLogInput, &sqlca);
+    {
+        DB2_API_CHECK("database archive -- archive logs");
+    }
+
+
+    readLogMemSize =  16 * 4096;
+
+    /* Invoke the initialization API to set up the control blocks */
+    readLogInit.iFilterOption = DB2READLOG_FILTER_ON;
+    readLogInit.piLogFilePath = logPath;
+    readLogInit.piOverflowLogPath = NULL;
+    readLogInit.iRetrieveLogs = DB2READLOG_RETRIEVE_OFF;
+    readLogInit.piDatabaseName = dbAlias;
+    readLogInit.piDbPartitionName = nodeNum;
+    readLogInit.iReadLogMemoryLimit = readLogMemSize;
+    readLogInit.poReadLogMemPtr = &readLogMemory;
+
+    printf("Init read log\n");
+    db2ReadLogNoConnInit(db2Version1111, &readLogInit, &sqlca);
+    if (sqlca.sqlcode != SQLU_RLOG_LSNS_REUSED)
+    {
+        DB2_API_CHECK("database logs no db conn -- initialization");
+    }
+
+
+    /* Invoke the db2ReadLogNoConn API to query the current log information */
+    readLogInput.iCallerAction = DB2READLOG_QUERY;
+    readLogInput.piStartLSN = NULL;
+    readLogInput.piEndLSN = NULL;
+    readLogInput.poLogBuffer = NULL;
+    readLogInput.iLogBufferSize = 0;
+    readLogInput.piReadLogMemPtr = readLogMemory;
+    readLogInput.poReadLogInfo = &readLogInfo;
+
+    db2ReadLogNoConn(db2Version1111, &readLogInput, &sqlca);
+    if (sqlca.sqlcode != 0)
+    {
+        DB2_API_CHECK("database logs no db conn -- query");
+    }
+
+    /* Read some log records */
+    logBufferSize = 64 * 1024;	/* Maximum size of a log buffer */
+    logBuffer = (char *)malloc(logBufferSize);
+
+    memcpy(&startLSN, &(readLogInfo.nextStartLSN), sizeof(startLSN));
+    endLSN.lsnU64 = 0xffffffffffffffff;
+
+    readLogInput.iCallerAction = DB2READLOG_READ;
+    readLogInput.piStartLSN = &startLSN;
+    readLogInput.piEndLSN = &endLSN;
+    readLogInput.poLogBuffer = logBuffer;
+    readLogInput.iLogBufferSize = logBufferSize;
+    readLogInput.piReadLogMemPtr = readLogMemory;
+    readLogInput.poReadLogInfo = &readLogInfo;
+
+    db2ReadLogNoConn(db2Version1111, &readLogInput, &sqlca);
+    if (sqlca.sqlcode != 0)
+    {
+        DB2_API_CHECK("database logs no db conn -- read");
+    }
+    else
+    {
+        if (readLogInfo.logRecsWritten == 0)
+        {
+            printf("\n  Database log empty.\n");
+        }
+    }
+
+    rc=40;
+    /* Display the log records */
+    rc = LogBufferDisplay(logBuffer, readLogInfo.logRecsWritten, 0);
+    CHECKRC(rc, "LogBufferDisplay");
+
+    while (sqlca.sqlcode != SQLU_RLOG_READ_TO_CURRENT)
+    {
+        rc -= 1;
+        /* read the next log sequence */
+        memcpy(&startLSN, &(readLogInfo.nextStartLSN), sizeof(startLSN));
+
+        /* Extract a log record and read the next log sequence asynchronously */
+        db2ReadLogNoConn(db2Version1111, &readLogInput, &sqlca);
+        if (sqlca.sqlcode != SQLU_RLOG_READ_TO_CURRENT)
+        {
+            DB2_API_CHECK("database logs no db conn -- read2");
+        }
+        printf(" ret=%d %d\n", rc, sqlca.sqlcode);
+
+        /* display log buffer */
+        rc = LogBufferDisplay(logBuffer, readLogInfo.logRecsWritten, 0);
+        CHECKRC(rc, "LogBufferDisplay");
+    }
+
+    /* detach from an instance */
+    //sqledtin(&sqlca);
+    free(logBuffer);
+    logBuffer = NULL;
+    logBufferSize = 0;
+
+    /* Invoke the db2ReadLogNoConnTerm API to terminate reading the logs */
+    readLogTerm.poReadLogMemPtr = &readLogMemory;
+
+    db2ReadLogNoConnTerm(db2Version1111, &readLogTerm, &sqlca);
+    DB2_API_CHECK("database logs no db conn -- terminate");
+    return PyLong_FromLong(rc);
+}
+
 /* Listing of ibm_db module functions: */
 static PyMethodDef ibm_db_Methods[] = {
 	/* name, function, argument type, docstring */
@@ -11061,6 +11224,7 @@ static PyMethodDef ibm_db_Methods[] = {
 	{"table_privileges", (PyCFunction)ibm_db_table_privileges, METH_VARARGS, "Returns a result set listing the tables and associated privileges in a database"},
 	{"tables", (PyCFunction)ibm_db_tables, METH_VARARGS, "Returns a result set listing the tables and associated metadata in a database"},
 	{"get_last_serial_value", (PyCFunction)ibm_db_get_last_serial_value, METH_VARARGS, "Returns last serial value inserted for identity column"},
+	{"read_log_record", (PyCFunction)ibm_db_read_log_record, METH_VARARGS, "Reads single log record"},
 	/* An end-of-listing sentinel: */ 
 	{NULL, NULL, 0, NULL}
 };

@@ -52,7 +52,7 @@ def _ext_modules(include_dir, library, lib_dir, runtime_dir=None):
     ext_args = dict(include_dirs = [include_dir],
                     libraries = library,
                     library_dirs = [lib_dir],
-                    sources = ['ibm_db.c'])
+                    sources = ['ibm_db.c', 'utilapi.c'])
     if runtime_dir:
         ext_args['runtime_library_dirs'] = [runtime_dir]
     ibm_db = Extension('ibm_db', **ext_args)
